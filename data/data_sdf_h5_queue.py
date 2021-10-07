@@ -1,13 +1,14 @@
-import numpy as np
-import cv2
-import random
+import copy
 import math
 import os
-import threading
 import queue
+import random
 import sys
+import threading
+
+import cv2
 import h5py
-import copy
+import numpy as np
 
 FETCH_BATCH_SIZE = 32
 BATCH_SIZE = 32
@@ -26,6 +27,7 @@ def get_filelist(lst_dir, maxnverts, minsurbinvox, cats, cats_info, type):
         lines = f.read().splitlines()
         file_lst = [[cat_id, line.strip()] for line in lines]
     return file_lst
+
 
 class Pt_sdf_img(threading.Thread):
     def __init__(self, FLAGS, listinfo=None, info=None, qsize=64, cats_limit=None, shuffle=True):
@@ -69,7 +71,6 @@ class Pt_sdf_img(threading.Thread):
         img_dir = os.path.join(self.img_dir, cat_id, obj)
         return img_dir, None
 
-
     def get_sdf_h5_filenm(self, cat_id, obj):
         return os.path.join(self.sdf_dir, cat_id, obj, "ori_sample.h5")
 
@@ -112,10 +113,10 @@ class Pt_sdf_img(threading.Thread):
     def getitem(self, index):
         cat_id, obj, num = self.listinfo[index]
         sdf_file = self.get_sdf_h5_filenm(cat_id, obj)
-        ori_pt, ori_sdf_val, sample_pt, sample_sdf_val, norm_params, sdf_params\
+        ori_pt, ori_sdf_val, sample_pt, sample_sdf_val, norm_params, sdf_params \
             = self.get_sdf_h5(sdf_file, cat_id, obj)
         img_dir, img_file_lst = self.get_img_dir(cat_id, obj)
-        return ori_pt, ori_sdf_val, sample_pt, sample_sdf_val, norm_params,\
+        return ori_pt, ori_sdf_val, sample_pt, sample_sdf_val, norm_params, \
                sdf_params, img_dir, img_file_lst, cat_id, obj, num
 
     def get_sdf_h5(self, sdf_h5_file, cat_id, obj):
@@ -127,7 +128,7 @@ class Pt_sdf_img(threading.Thread):
                 ori_sdf = h5_f['pc_sdf_original'][:].astype(np.float32)
                 # sample_sdf = np.reshape(h5_f['pc_sdf_sample'][:],(ori_sdf.shape[0], -1 ,4)).astype(np.float32)
                 sample_sdf = h5_f['pc_sdf_sample'][:].astype(np.float32)
-                ori_pt = ori_sdf[:,:3]#, ori_sdf[:,3]
+                ori_pt = ori_sdf[:, :3]  # , ori_sdf[:,3]
                 ori_sdf_val = None
                 if sample_sdf.shape[1] == 4:
                     sample_pt, sample_sdf_val = sample_sdf[:, :3], sample_sdf[:, 3]
@@ -147,11 +148,11 @@ class Pt_sdf_img(threading.Thread):
         # azimuth, elevation, in-plane rotation, distance, the field of view.
         param = params[num, :].astype(np.float32)
         cam_mat, cam_pos = self.camera_info(self.degree2rad(param))
-        img_arr = cv2.imread(img_file, cv2.IMREAD_UNCHANGED)[:,:,:3].astype(np.float32) / 255.
+        img_arr = cv2.imread(img_file, cv2.IMREAD_UNCHANGED)[:, :, :3].astype(np.float32) / 255.
         return img_arr, cam_mat, cam_pos
 
     def get_img(self, img_dir, num):
-        img_h5 = os.path.join(img_dir, "%02d.h5"%num)
+        img_h5 = os.path.join(img_dir, "%02d.h5" % num)
         cam_mat, cam_pos, trans_mat, obj_rot_mat, regress_mat = None, None, None, None, None
         with h5py.File(img_h5, 'r') as h5_f:
             if self.FLAGS.img_feat_onestream or self.FLAGS.img_feat_twostream:
@@ -162,7 +163,7 @@ class Pt_sdf_img(threading.Thread):
                 cam_mat, cam_pos = h5_f["cam_mat"][:].astype(np.float32), h5_f["cam_pos"][:].astype(np.float32)
             if self.FLAGS.alpha:
                 img_arr = h5_f["img_arr"][:].astype(np.float32)
-                img_arr[:, :, :4] = img_arr[:,:,:4] / 255.
+                img_arr[:, :, :4] = img_arr[:, :, :4] / 255.
             else:
                 img_raw = h5_f["img_arr"][:]
                 img_arr = img_raw[:, :, :3]
@@ -215,24 +216,26 @@ class Pt_sdf_img(threading.Thread):
     def get_az(self, az):
         cos = np.cos(az)
         sin = np.sin(az)
-        mat = np.asarray([cos, 0.0, sin, 0.0, 1.0, 0.0, -1.0*sin, 0.0, cos], dtype=np.float32)
-        mat = np.reshape(mat, [3,3])
+        mat = np.asarray([cos, 0.0, sin, 0.0, 1.0, 0.0, -1.0 * sin, 0.0, cos], dtype=np.float32)
+        mat = np.reshape(mat, [3, 3])
         return mat
+
     #
     def get_el(self, el):
         cos = np.cos(el)
         sin = np.sin(el)
-        mat = np.asarray([1.0, 0.0, 0.0, 0.0, cos, -1.0*sin, 0.0, sin, cos], dtype=np.float32)
-        mat = np.reshape(mat, [3,3])
+        mat = np.asarray([1.0, 0.0, 0.0, 0.0, cos, -1.0 * sin, 0.0, sin, cos], dtype=np.float32)
+        mat = np.reshape(mat, [3, 3])
         return mat
+
     #
     def get_inl(self, inl):
         cos = np.cos(inl)
         sin = np.sin(inl)
         # zeros = np.zeros_like(inl)
         # ones = np.ones_like(inl)
-        mat = np.asarray([cos, -1.0*sin, 0.0, sin, cos, 0.0, 0.0, 0.0, 1.0], dtype=np.float32)
-        mat = np.reshape(mat, [3,3])
+        mat = np.asarray([cos, -1.0 * sin, 0.0, sin, cos, 0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+        mat = np.reshape(mat, [3, 3])
         return mat
 
     def get_batch(self, index):
@@ -307,15 +310,14 @@ class Pt_sdf_img(threading.Thread):
         cats_quota = {key: value for key, value in self.cats_limit.items()}
         np.random.shuffle(temp_order)
         pointer = 0
-        epoch_order=[]
+        epoch_order = []
         while len(epoch_order) < self.epoch_amount:
             cat_id, _, _ = self.listinfo[temp_order[pointer]]
             if cats_quota[cat_id] > 0:
                 epoch_order.append(temp_order[pointer])
-                cats_quota[cat_id]-=1
-            pointer+=1
+                cats_quota[cat_id] -= 1
+            pointer += 1
         return epoch_order
-
 
     def work(self, epoch, index):
         if index == 0 and self.shuffle:
@@ -324,8 +326,8 @@ class Pt_sdf_img(threading.Thread):
         return self.get_batch(index)
 
     def run(self):
-        while (self.bno // (self.num_batches* self.batch_size)) < self.FLAGS.max_epoch and not self.stopped:
-            self.queue.put(self.work(self.bno // (self.num_batches* self.batch_size),
+        while (self.bno // (self.num_batches * self.batch_size)) < self.FLAGS.max_epoch and not self.stopped:
+            self.queue.put(self.work(self.bno // (self.num_batches * self.batch_size),
                                      self.bno % (self.num_batches * self.batch_size)))
             self.bno += self.batch_size
 
@@ -341,8 +343,8 @@ class Pt_sdf_img(threading.Thread):
         while not self.queue.empty():
             self.queue.get()
 
-if __name__ == '__main__':
 
+if __name__ == '__main__':
     sys.path.append('../preprocessing/')
     import create_file_lst as create
 

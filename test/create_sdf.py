@@ -1,23 +1,26 @@
 import argparse
-from datetime import datetime
-import numpy as np
-import random
-import tensorflow as tf
-import socket
 import os
-import sys
-import h5py
+import random
+import socket
 import struct
+import sys
+from datetime import datetime
+
+import h5py
+import numpy as np
+import tensorflow as tf
+
 BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.append(BASE_DIR) # model
+sys.path.append(BASE_DIR)  # model
 sys.path.append(os.path.join(BASE_DIR, 'models'))
 sys.path.append(os.path.join(BASE_DIR, 'data'))
 sys.path.append(os.path.join(BASE_DIR, 'utils'))
 sys.path.append(os.path.join(BASE_DIR, 'preprocessing'))
 import model_normalization as model
 from concurrent.futures import ThreadPoolExecutor
-import data_sdf_h5_queue # as data
+import data_sdf_h5_queue  # as data
 import create_file_lst
+
 slim = tf.contrib.slim
 lst_dir, cats, all_cats, raw_dirs = create_file_lst.get_all_info()
 
@@ -60,17 +63,17 @@ parser.add_argument('--augcolorback', action='store_true')
 parser.add_argument('--backcolorwhite', action='store_true')
 
 FLAGS = parser.parse_args()
-print('pid: %s'%(str(os.getpid())))
+print('pid: %s' % (str(os.getpid())))
 print(FLAGS)
 
 EPOCH_CNT = 0
 NUM_POINTS = FLAGS.num_points
 BATCH_SIZE = FLAGS.batch_size
-RESOLUTION = FLAGS.sdf_res+1
+RESOLUTION = FLAGS.sdf_res + 1
 TOTAL_POINTS = RESOLUTION * RESOLUTION * RESOLUTION
 if FLAGS.img_feat_twostream:
     SPLIT_SIZE = int(np.ceil(TOTAL_POINTS / 214669.0))
-elif FLAGS.threedcnn :
+elif FLAGS.threedcnn:
     SPLIT_SIZE = 1
 else:
     SPLIT_SIZE = int(np.ceil(TOTAL_POINTS / 274625.0))
@@ -88,14 +91,14 @@ RESULT_PATH = os.path.join(LOG_DIR, 'test_results_allpts')
 if FLAGS.cam_est:
     RESULT_OBJ_PATH = os.path.join(LOG_DIR, 'test_objs', "camest_"
                                    + str(RESOLUTION) + "_" + str(FLAGS.iso))
-    print("RESULT_OBJ_PATH: ",RESULT_OBJ_PATH)
+    print("RESULT_OBJ_PATH: ", RESULT_OBJ_PATH)
 else:
     RESULT_OBJ_PATH = os.path.join(LOG_DIR, 'test_objs', str(RESOLUTION) + "_" + str(FLAGS.iso))
 if not os.path.exists(RESULT_PATH): os.mkdir(RESULT_PATH)
 if not os.path.exists(RESULT_OBJ_PATH): os.makedirs(RESULT_OBJ_PATH, exist_ok=True)
 
 LOG_FOUT = open(os.path.join(LOG_DIR, 'log_test.txt'), 'w')
-LOG_FOUT.write(str(FLAGS)+'\n')
+LOG_FOUT.write(str(FLAGS) + '\n')
 
 IMG_SIZE = FLAGS.img_h
 HOSTNAME = socket.gethostname()
@@ -117,7 +120,7 @@ else:
     cats_limit[cats[FLAGS.category]] = 0
 
 for cat_id in cat_ids:
-    test_lst = os.path.join(FLAGS.test_lst_dir, cat_id+"_test.lst")
+    test_lst = os.path.join(FLAGS.test_lst_dir, cat_id + "_test.lst")
     with open(test_lst, 'r') as f:
         lines = f.read().splitlines()
         for line in lines:
@@ -128,7 +131,7 @@ for cat_id in cat_ids:
 
 
 def log_string(out_str):
-    LOG_FOUT.write(out_str+'\n')
+    LOG_FOUT.write(out_str + '\n')
     LOG_FOUT.flush()
     print(out_str)
 
@@ -140,20 +143,21 @@ elif FLAGS.img_feat_onestream or FLAGS.img_feat_twostream:
     info = {'rendered_dir': raw_dirs["renderedh5_dir"],
             'sdf_dir': raw_dirs["sdf_dir"]}
     if FLAGS.cam_est:
-        info['rendered_dir']= raw_dirs["renderedh5_dir_est"]
+        info['rendered_dir'] = raw_dirs["renderedh5_dir_est"]
 else:
     info = {'rendered_dir': raw_dirs["renderedh5_dir_v2"],
             'sdf_dir': raw_dirs['sdf_dir_v2']}
 
 TEST_DATASET = data_sdf_h5_queue.Pt_sdf_img(FLAGS,
-    listinfo=TEST_LISTINFO, info=info, cats_limit=cats_limit, shuffle=False)
+                                            listinfo=TEST_LISTINFO, info=info, cats_limit=cats_limit, shuffle=False)
 print(info)
+
 
 def create():
     log_string(LOG_DIR)
 
     input_pls = model.placeholder_inputs(BATCH_SIZE, NUM_POINTS, (IMG_SIZE, IMG_SIZE),
-                        num_sample_pc=NUM_SAMPLE_POINTS, scope='inputs_pl', FLAGS=FLAGS)
+                                         num_sample_pc=NUM_SAMPLE_POINTS, scope='inputs_pl', FLAGS=FLAGS)
     is_training_pl = tf.placeholder(tf.bool, shape=())
     print(is_training_pl)
     batch = tf.Variable(0, name='batch')
@@ -161,12 +165,12 @@ def create():
     print("--- Get model and loss")
     # Get model and loss
 
-    end_points = model.get_model(input_pls, NUM_POINTS, is_training_pl, bn=False,FLAGS=FLAGS)
+    end_points = model.get_model(input_pls, NUM_POINTS, is_training_pl, bn=False, FLAGS=FLAGS)
 
     loss, end_points = model.get_loss(end_points,
-        sdf_weight=SDF_WEIGHT, num_sample_points=NUM_SAMPLE_POINTS, FLAGS=FLAGS)
+                                      sdf_weight=SDF_WEIGHT, num_sample_points=NUM_SAMPLE_POINTS, FLAGS=FLAGS)
     # Create a session
-    gpu_options = tf.GPUOptions() # per_process_gpu_memory_fraction=0.99
+    gpu_options = tf.GPUOptions()  # per_process_gpu_memory_fraction=0.99
     config = tf.ConfigProto(gpu_options=gpu_options)
     config.gpu_options.allow_growth = True
     config.allow_soft_placement = True
@@ -205,21 +209,24 @@ def create():
 
 
 class NoStdStreams(object):
-    def __init__(self,stdout = None, stderr = None):
-        self.devnull = open(os.devnull,'w')
+    def __init__(self, stdout=None, stderr=None):
+        self.devnull = open(os.devnull, 'w')
         self._stdout = stdout or self.devnull or sys.stdout
         self._stderr = stderr or self.devnull or sys.stderr
 
     def __enter__(self):
         self.old_stdout, self.old_stderr = sys.stdout, sys.stderr
-        self.old_stdout.flush(); self.old_stderr.flush()
+        self.old_stdout.flush();
+        self.old_stderr.flush()
         sys.stdout, sys.stderr = self._stdout, self._stderr
 
     def __exit__(self, exc_type, exc_value, traceback):
-        self._stdout.flush(); self._stderr.flush()
+        self._stdout.flush();
+        self._stderr.flush()
         sys.stdout = self.old_stdout
         sys.stderr = self.old_stderr
         self.devnull.close()
+
 
 def test_one_epoch(sess, ops):
     """ ops: dict mapping from string to tf ops """
@@ -265,28 +272,29 @@ def test_one_epoch(sess, ops):
                                  ops['input_pls']['imgs']: batch_data['img']}
                 else:
                     feed_dict = {ops['is_training_pl']: is_training,
-                                 ops['input_pls']['sample_pc']: batch_points[sp,...].reshape(BATCH_SIZE, -1, 3),
-                                 ops['input_pls']['sample_pc_rot']: batch_points[sp,...].reshape(BATCH_SIZE, -1, 3),
+                                 ops['input_pls']['sample_pc']: batch_points[sp, ...].reshape(BATCH_SIZE, -1, 3),
+                                 ops['input_pls']['sample_pc_rot']: batch_points[sp, ...].reshape(BATCH_SIZE, -1, 3),
                                  ops['input_pls']['imgs']: batch_data['img'],
                                  ops['input_pls']['trans_mat']: batch_data['trans_mat']}
 
                 output_list = [ops['end_points']['pred_sdf'], ops['end_points']['ref_img'],
                                ops['end_points']['sample_img_points']]
                 pred_sdf_val, ref_img_val, sample_img_points_val = sess.run(output_list, feed_dict=feed_dict)
-                pred_sdf_val_all[sp,:,:,:] = pred_sdf_val
-            pred_sdf_val_all = np.swapaxes(pred_sdf_val_all,0,1) # B, S, NUM SAMPLE, 1 or 2
-            pred_sdf_val_all = pred_sdf_val_all.reshape((BATCH_SIZE,-1,2 if FLAGS.binary else 1))[:, :TOTAL_POINTS, :]
+                pred_sdf_val_all[sp, :, :, :] = pred_sdf_val
+            pred_sdf_val_all = np.swapaxes(pred_sdf_val_all, 0, 1)  # B, S, NUM SAMPLE, 1 or 2
+            pred_sdf_val_all = pred_sdf_val_all.reshape((BATCH_SIZE, -1, 2 if FLAGS.binary else 1))[:, :TOTAL_POINTS, :]
             if FLAGS.binary:
                 expo = np.exp(pred_sdf_val_all)
-                prob = expo[:,:,1] / np.sum(expo, axis = 2)
+                prob = expo[:, :, 1] / np.sum(expo, axis=2)
                 result = (prob - 0.5) / 10.
                 print("result.shape", result.shape)
             else:
                 result = pred_sdf_val_all / SDF_WEIGHT
             for b in range(BATCH_SIZE):
-                print("{}/{}, submit create_obj {}, {}, {}".format(batch_idx, num_batches, batch_data['cat_id'][b], batch_data['obj_nm'][b], batch_data['view_id'][b]))
+                print("{}/{}, submit create_obj {}, {}, {}".format(batch_idx, num_batches, batch_data['cat_id'][b],
+                                                                   batch_data['obj_nm'][b], batch_data['view_id'][b]))
                 executor.submit(create_obj, result[b], batch_data['sdf_params'][b], RESULT_OBJ_PATH,
-                    batch_data['cat_id'][b], batch_data['obj_nm'][b], batch_data['view_id'][b], FLAGS.iso)
+                                batch_data['cat_id'][b], batch_data['obj_nm'][b], batch_data['view_id'][b], FLAGS.iso)
 
 
 def to_binary(res, pos, pred_sdf_val_all, sdf_file):
@@ -298,29 +306,32 @@ def to_binary(res, pos, pred_sdf_val_all, sdf_file):
 
     positions = struct.pack('d' * len(pos), *pos)
     f_sdf_bin.write(positions)
-    val = struct.pack('=%sf'%pred_sdf_val_all.shape[0], *(pred_sdf_val_all))
+    val = struct.pack('=%sf' % pred_sdf_val_all.shape[0], *(pred_sdf_val_all))
     f_sdf_bin.write(val)
     f_sdf_bin.close()
 
+
 def create_obj(pred_sdf_val, sdf_params, dir, cat_id, obj_nm, view_id, i):
     if not isinstance(view_id, str):
-        view_id = "%02d"%view_id
+        view_id = "%02d" % view_id
     dir = os.path.join(dir, cat_id)
     os.makedirs(dir, exist_ok=True)
-    obj_nm = cat_id +"_" + obj_nm
-    cube_obj_file = os.path.join(dir, obj_nm+"_"+view_id+".obj")
-    sdf_file = os.path.join(dir, obj_nm+"_"+view_id+".dist")
-    to_binary((RESOLUTION-1), sdf_params, pred_sdf_val, sdf_file)
+    obj_nm = cat_id + "_" + obj_nm
+    cube_obj_file = os.path.join(dir, obj_nm + "_" + view_id + ".obj")
+    sdf_file = os.path.join(dir, obj_nm + "_" + view_id + ".dist")
+    to_binary((RESOLUTION - 1), sdf_params, pred_sdf_val, sdf_file)
     create_one_cube_obj("./isosurface/computeMarchingCubes", i, sdf_file, cube_obj_file)
     command_str = "rm -rf " + sdf_file
     print("command:", command_str)
     os.system(command_str)
+
 
 def create_one_cube_obj(marching_cube_command, i, sdf_file, cube_obj_file):
     command_str = marching_cube_command + " " + sdf_file + " " + cube_obj_file + " -i " + str(i)
     print("command:", command_str)
     os.system(command_str)
     return cube_obj_file
+
 
 def get_sdf_h5(sdf_h5_file, cat_id, obj):
     h5_f = h5py.File(sdf_h5_file, 'r')
@@ -331,10 +342,10 @@ def get_sdf_h5(sdf_h5_file, cat_id, obj):
             ori_sdf = h5_f['pc_sdf_original'][:].astype(np.float32)
             # sample_sdf = np.reshape(h5_f['pc_sdf_sample'][:],(ori_sdf.shape[0], -1 ,4)).astype(np.float32)
             sample_sdf = h5_f['pc_sdf_sample'][:].astype(np.float32)
-            ori_pt = ori_sdf[:,:3]#, ori_sdf[:,3]
+            ori_pt = ori_sdf[:, :3]  # , ori_sdf[:,3]
             ori_sdf_val = None
             if sample_sdf.shape[1] == 4:
-                sample_pt, sample_sdf_val = sample_sdf[:,:3], sample_sdf[:,3]
+                sample_pt, sample_sdf_val = sample_sdf[:, :3], sample_sdf[:, 3]
             else:
                 sample_pt, sample_sdf_val = None, sample_sdf[:, 0]
             norm_params = h5_f['norm_params'][:]
@@ -345,13 +356,10 @@ def get_sdf_h5(sdf_h5_file, cat_id, obj):
         h5_f.close()
     return ori_pt, ori_sdf_val, sample_pt, sample_sdf_val, norm_params, sdf_params
 
+
 if __name__ == "__main__":
-
-
     # 1. create all categories / some of the categories:
     create()
-
-
 
     # 2. create single obj, just run python -u create_sdf.py
 
@@ -360,4 +368,3 @@ if __name__ == "__main__":
     #                 "03001627", "47cd848a5584867b1e8791c225564ae0")
     # create_obj(sample_sdf_val, sdf_params, "send/",
     #            "03001627", "97cd4ed02e022ce7174150bd56e389a8", "111", 0.00)
-
