@@ -2,14 +2,13 @@ import argparse
 import glob
 import os
 import shutil
-from joblib import Parallel, delayed
 from multiprocessing import cpu_count
-from typing import Any
+from typing import Any, List, Tuple, Union
 
+from joblib import Parallel, delayed
 import numpy as np
-import pymesh
 import trimesh
-from scipy.interpolate import RegularGridInterpolator
+from scipy.interpolate import RegularGridInterpolator, LinearNDInterpolator
 
 
 def normalize_mesh(input_path: str, output_path: str, padding: float = 0.1, verbose: bool = False):
@@ -37,7 +36,7 @@ def normalize_mesh(input_path: str, output_path: str, padding: float = 0.1, verb
 
 def sdf_from_mesh(input_path: str, resolution: int = 256, **kwargs):
     command = f"./isosurface/computeDistanceField {input_path} {resolution} {resolution} {resolution}"
-    kwarg_list = ["n", "s", 'o', "m", "b", "c", "e", "d", "t", "w", "W", "g", "G", "r", "i", "v", "p"]
+    kwarg_list = ['n', 's', 'o', 'm', 'b', 'c', 'e', 'd', 't', 'w', 'W', 'g', 'G', 'r', 'i', 'v', 'p']
 
     if kwargs.get('w') and kwargs.get('W'):
         kwarg_list.remove('w')
@@ -58,74 +57,151 @@ def sdf_from_mesh(input_path: str, resolution: int = 256, **kwargs):
     os.system(command)
 
 
-def sample(sdf_path: str, args: Any):
-    sdf_dict = load_sdf(sdf_path, args.res)
-    sdf_values = sdf_dict["values"]
-    sdf_bounds = sdf_dict["bounds"]
-    rng = np.random.default_rng()
+def uniform_grid_sampling(grid: np.ndarray,
+                          bounds: Union[np.ndarray, List, Tuple],
+                          num_points: int,
+                          mask: Union[np.ndarray, List, Tuple] = None) -> np.ndarray:
+    assert len(grid.shape) == 3
+    assert len(bounds) == 6
+    assert grid.size >= num_points
+    if mask is not None:
+        assert np.sum(mask) >= num_points
+    
+    res_x, res_y, res_z = grid.shape
+    x = np.linspace(bounds[0], bounds[3], num=res_x).astype(np.float32)
+    y = np.linspace(bounds[1], bounds[4], num=res_y).astype(np.float32)
+    z = np.linspace(bounds[2], bounds[5], num=res_z).astype(np.float32)
 
-    x = np.linspace(sdf_bounds[0], sdf_bounds[3], num=args.res + 1).astype(np.float32)
-    y = np.linspace(sdf_bounds[1], sdf_bounds[4], num=args.res + 1).astype(np.float32)
-    z = np.linspace(sdf_bounds[2], sdf_bounds[5], num=args.res + 1).astype(np.float32)
+    rng = np.random.default_rng()
+    if mask is None:
+        choice = rng.integers(grid.size, size=num_points)
+        x_ind = choice % (res_x)
+        y_ind = (choice // (res_y)) % (res_y)
+        z_ind = choice // (res_z) ** 2
+        x_vals = x[x_ind]
+        y_vals = y[y_ind]
+        z_vals = z[z_ind]
+        vals = grid.flatten()[choice]
+    else:
+        choice = rng.choice(np.argwhere(mask), size=num_points)
+        x_vals = x[choice[:, 0]]
+        y_vals = y[choice[:, 1]]
+        z_vals = z[choice[:, 2]]
+        vals = list()
+        for c in choice:
+            vals.append(grid[c[0], c[1], c[2]])
+        vals = np.array(vals)
+    return np.vstack((x_vals, y_vals, z_vals, vals)).T
+
+
+def uniform_random_sampling(grid: np.ndarray,
+                            bounds: Union[np.ndarray, List, Tuple],
+                            num_points: int) -> np.ndarray:
+    assert len(grid.shape) == 3
+    assert len(bounds) == 6
+    
+    res_x, res_y, res_z = grid.shape
+    x = np.linspace(bounds[0], bounds[3], num=res_x).astype(np.float32)
+    y = np.linspace(bounds[1], bounds[4], num=res_y).astype(np.float32)
+    z = np.linspace(bounds[2], bounds[5], num=res_z).astype(np.float32)
+    
+    rng = np.random.default_rng()
+    interpolator = RegularGridInterpolator((z, y, x), grid)
+    x = (bounds[3] - bounds[0]) * rng.random(num_points) + bounds[0]
+    y = (bounds[1] - bounds[4]) * rng.random(num_points) + bounds[4]
+    z = (bounds[2] - bounds[5]) * rng.random(num_points) + bounds[5]
+    samples = np.vstack((x, y, z)).T
+    return np.hstack((samples, np.expand_dims(interpolator(samples), axis=1)))
+
+
+def sample(sdf_path: str, args: Any) -> None:
+    # sdf_dict = load_sdf(sdf_path, args.res)
+    # sdf_values = sdf_dict["values"]
+    # sdf_bounds = sdf_dict["bounds"]
+    rng = np.random.default_rng()
+    sdf_values = (rng.random(257 ** 3) - 0.5).reshape((257, 257, 257))
+    sdf_bounds = np.array([-0.5, -0.5, -0.5, 0.5, 0.5, 0.5])
 
     # 1. Uniform samples from voxel grid
-    choice = rng.integers(sdf_values.size, size=args.num_points)
-    x_ind = choice % (args.res + 1)
-    y_ind = (choice // (args.res + 1)) % (args.res + 1)
-    z_ind = choice // (args.res + 1) ** 2
-    x_vals = x[x_ind]
-    y_vals = y[y_ind]
-    z_vals = z[z_ind]
-    vals = sdf_values.flatten()[choice]
-    uniform_grid_samples = np.vstack((x_vals, y_vals, z_vals, vals)).T
-    print(uniform_grid_samples.shape)
-    print(uniform_grid_samples)
+    uniform_grid_samples = uniform_grid_sampling(sdf_values, sdf_bounds, args.num_points)
 
     # 2. Equal (inside/outside) samples from voxel grid
+    inside_mask = sdf_values <= 0
+    outside_mask = sdf_values > 0
+    inside_samples = uniform_grid_sampling(sdf_values, sdf_bounds, args.num_points // 2, inside_mask)
+    outside_samples = uniform_grid_sampling(sdf_values, sdf_bounds, args.num_points // 2, outside_mask)
+    equal_grid_samples = np.concatenate((inside_samples, outside_samples))
 
     # 3. Surface/uniform samples from voxel grid
-    # 3.1 Surface
-    surface_condition = (sdf_values < (1 / args.res)) & (sdf_values > -(1 / args.res))
-    surface_values = sdf_values[surface_condition]
-    choice = rng.integers(surface_values.size, size=args.num_points // 2)
-    x_ind = choice % (args.res + 1)
-    y_ind = (choice // (args.res + 1)) % (args.res + 1)
-    z_ind = choice // (args.res + 1) ** 2
-    x_vals = x[x_ind]
-    y_vals = y[y_ind]
-    z_vals = z[z_ind]
-    vals = surface_values.flatten()[choice]
-    surface_samples = np.vstack((x_vals, y_vals, z_vals, vals)).T
-
-    # 3.2 Uniform
-    choice = rng.integers(sdf_values.size, size=args.num_points // 2)
-    x_ind = choice % (args.res + 1)
-    y_ind = (choice // (args.res + 1)) % (args.res + 1)
-    z_ind = choice // (args.res + 1) ** 2
-    x_vals = x[x_ind]
-    y_vals = y[y_ind]
-    z_vals = z[z_ind]
-    vals = sdf_values.flatten()[choice]
-    uniform_samples = np.vstack((x_vals, y_vals, z_vals, vals)).T
-
-    # 3.3 Surface + Uniform
+    surface_mask = (sdf_values < (1 / args.res)) & (sdf_values > -(1 / args.res))
+    surface_samples = uniform_grid_sampling(sdf_values, sdf_bounds, args.num_points // 2, surface_mask)
+    uniform_samples = uniform_grid_samples[:args.num_points // 2]
     surface_grid_samples = np.concatenate((surface_samples, uniform_samples))
-    print("Surface grid samples:")
-    print(surface_grid_samples.shape)
-    print(surface_grid_samples)
 
     # 4. Uniform random samples in volume
-    interpolator = RegularGridInterpolator((z, y, x), sdf_values)
-    x = (sdf_bounds[3] - sdf_bounds[0]) * rng.random(args.num_points) + sdf_bounds[0]
-    y = (sdf_bounds[1] - sdf_bounds[4]) * rng.random(args.num_points) + sdf_bounds[4]
-    z = (sdf_bounds[2] - sdf_bounds[5]) * rng.random(args.num_points) + sdf_bounds[5]
-    samples = np.vstack((x, y, z)).T
-    uniform_random_samples = np.hstack((samples, np.expand_dims(interpolator(samples), axis=1)))
-    print(uniform_random_samples.shape)
-    print(uniform_random_samples)
+    uniform_random_samples = uniform_random_sampling(sdf_values, sdf_bounds, args.num_points)
 
     # 5. Equal (inside/outside) random samples in volume
+    res_x, res_y, res_z = sdf_values.shape
+    x = np.linspace(sdf_bounds[0], sdf_bounds[3], num=res_x).astype(np.float32)
+    y = np.linspace(sdf_bounds[1], sdf_bounds[4], num=res_y).astype(np.float32)
+    z = np.linspace(sdf_bounds[2], sdf_bounds[5], num=res_z).astype(np.float32)
+    sigma = 0.01 * (sdf_bounds.max() - sdf_bounds.min())
+    interpolator = RegularGridInterpolator((z, y, x), sdf_values)
+
+    # 5.1 Inside
+    x_vals = inside_samples[:, 0] + rng.normal(0, sigma, size=inside_samples[:, 0].shape)
+    y_vals = inside_samples[:, 1] + rng.normal(0, sigma, size=inside_samples[:, 1].shape)
+    z_vals = inside_samples[:, 2] + rng.normal(0, sigma, size=inside_samples[:, 2].shape)
+    x_vals[x_vals > sdf_bounds[3]] = sdf_bounds[3]
+    x_vals[x_vals < sdf_bounds[0]] = sdf_bounds[0]
+    y_vals[y_vals > sdf_bounds[4]] = sdf_bounds[4]
+    y_vals[y_vals < sdf_bounds[1]] = sdf_bounds[1]
+    z_vals[z_vals > sdf_bounds[5]] = sdf_bounds[5]
+    z_vals[z_vals < sdf_bounds[2]] = sdf_bounds[2]
+    samples = np.vstack((x_vals, y_vals, z_vals)).T
+    inside_samples = np.hstack((samples, np.expand_dims(interpolator(samples), axis=1)))
+
+    # 5.2 Outside
+    x_vals = outside_samples[:, 0] + rng.normal(0, sigma, size=outside_samples[:, 0].shape)
+    y_vals = outside_samples[:, 1] + rng.normal(0, sigma, size=outside_samples[:, 1].shape)
+    z_vals = outside_samples[:, 2] + rng.normal(0, sigma, size=outside_samples[:, 2].shape)
+    x_vals[x_vals > sdf_bounds[3]] = sdf_bounds[3]
+    x_vals[x_vals < sdf_bounds[0]] = sdf_bounds[0]
+    y_vals[y_vals > sdf_bounds[4]] = sdf_bounds[4]
+    y_vals[y_vals < sdf_bounds[1]] = sdf_bounds[1]
+    z_vals[z_vals > sdf_bounds[5]] = sdf_bounds[5]
+    z_vals[z_vals < sdf_bounds[2]] = sdf_bounds[2]
+    samples = np.vstack((x_vals, y_vals, z_vals)).T
+    outside_samples = np.hstack((samples, np.expand_dims(interpolator(samples), axis=1)))
+
+    equal_random_samples = np.concatenate((inside_samples, outside_samples))
+
     # 6. Surface/uniform random samples in volume
+    x_vals = surface_samples[:, 0] + rng.normal(0, sigma, size=surface_samples[:, 0].shape)
+    y_vals = surface_samples[:, 1] + rng.normal(0, sigma, size=surface_samples[:, 1].shape)
+    z_vals = surface_samples[:, 2] + rng.normal(0, sigma, size=surface_samples[:, 2].shape)
+    x_vals[x_vals > sdf_bounds[3]] = sdf_bounds[3]
+    x_vals[x_vals < sdf_bounds[0]] = sdf_bounds[0]
+    y_vals[y_vals > sdf_bounds[4]] = sdf_bounds[4]
+    y_vals[y_vals < sdf_bounds[1]] = sdf_bounds[1]
+    z_vals[z_vals > sdf_bounds[5]] = sdf_bounds[5]
+    z_vals[z_vals < sdf_bounds[2]] = sdf_bounds[2]
+    samples = np.vstack((x_vals, y_vals, z_vals)).T
+    surface_samples = np.hstack((samples, np.expand_dims(interpolator(samples), axis=1)))
+    surface_random_samples = np.concatenate((surface_samples, uniform_random_samples[:args.num_points // 2]))
+
+    for samples in [uniform_grid_samples,
+                    equal_grid_samples,
+                    surface_grid_samples,
+                    uniform_random_samples,
+                    equal_random_samples,
+                    surface_random_samples]:
+        assert samples.shape == (args.num_points, 4)
+        assert all((samples[:, 0] >= sdf_bounds[0]) & (samples[:, 0] <= sdf_bounds[3]))
+        assert all((samples[:, 1] >= sdf_bounds[1]) & (samples[:, 1] <= sdf_bounds[4]))
+        assert all((samples[:, 2] >= sdf_bounds[2]) & (samples[:, 2] <= sdf_bounds[5]))
+        assert all((samples[:, 3] >= sdf_bounds.min()) & (samples[:, 3] <= sdf_bounds.max()))
 
 
 def load_sdf(sdf_path: str, resolution: int = 256):
@@ -250,6 +326,8 @@ def main():
 
     args = parser.parse_args()
 
+    sample("", args)
+    return
     os.makedirs(args.o, exist_ok=True)
     if not args.shapenet:
         os.makedirs(os.path.join(args.o, "normalized"), exist_ok=True)
