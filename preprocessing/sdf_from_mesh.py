@@ -115,12 +115,10 @@ def uniform_random_sampling(grid: np.ndarray,
 
 
 def sample(sdf_path: str, args: Any) -> None:
-    # sdf_dict = load_sdf(sdf_path, args.res)
-    # sdf_values = sdf_dict["values"]
-    # sdf_bounds = sdf_dict["bounds"]
+    sdf_dict = load_sdf(sdf_path, args.res)
+    sdf_values = sdf_dict["values"]
+    sdf_bounds = sdf_dict["bounds"]
     rng = np.random.default_rng()
-    sdf_values = (rng.random(257 ** 3) - 0.5).reshape((257, 257, 257))
-    sdf_bounds = np.array([-0.5, -0.5, -0.5, 0.5, 0.5, 0.5])
 
     # 1. Uniform samples from voxel grid
     uniform_grid_samples = uniform_grid_sampling(sdf_values, sdf_bounds, args.num_points)
@@ -326,8 +324,6 @@ def main():
 
     args = parser.parse_args()
 
-    sample("", args)
-    return
     os.makedirs(args.o, exist_ok=True)
     if not args.shapenet:
         os.makedirs(os.path.join(args.o, "normalized"), exist_ok=True)
