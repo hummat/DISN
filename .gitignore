@@ -6,3 +6,8 @@ models/CNN/pretrained_model/
 checkpoint/
 log/
 pnt_vis/
+*.obj
+*.dist
+*.npz
+*.h5
+*.hdf5
