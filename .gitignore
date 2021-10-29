@@ -11,3 +11,10 @@ pnt_vis/
 *.npz
 *.h5
 *.hdf5
+*.npy
+*.jpeg
+*.jpg
+*.JPG
+*.PNG
+*.png
+*.mtl

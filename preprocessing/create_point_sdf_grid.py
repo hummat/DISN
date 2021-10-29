@@ -361,7 +361,7 @@ if __name__ == "__main__":
                max_verts=16384,
                ish5=True,
                normalize=True,
-               g=0.00,  # iso-surface value
+               g=0.00,
                version=1,
                skip_all_exist=True)
 
