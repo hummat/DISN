@@ -14,6 +14,7 @@ import pymesh
 from joblib import Parallel, delayed
 from matplotlib.cm import get_cmap
 from scipy.interpolate import RegularGridInterpolator
+from skimage.measure import marching_cubes
 # from create_point_sdf_grid import get_normalize_mesh
 
 
@@ -39,7 +40,7 @@ def normalize_mesh(input_path: str, output_path: str, args: Any) -> None:
     if not input_path.endswith(".off"):
         path = input_path.replace(".obj", ".off")
         command = f"meshlabserver -i {input_path} -o {path}"
-        subprocess.run(command.split(' '), stdout=subprocess.DEVNULL)
+        subprocess.run(command.split(' '), stdout=None if args.verbose else subprocess.DEVNULL)
         # os.system(command + " &> /dev/null")
     mesh = trimesh.load(path, process=False)
 
@@ -64,7 +65,7 @@ def sdf_from_mesh(mesh_path: str, resolution: int = 256, **kwargs: Any) -> None:
         kwarg_list.remove('w')
 
     if kwargs.get('g') is not None and kwargs.get('G') is not None:
-        if kwargs.get('G') == 3:
+        if kwargs.get('G') == 1:
             kwarg_list.remove('G')
         else:
             kwarg_list.remove('g')
@@ -77,26 +78,60 @@ def sdf_from_mesh(mesh_path: str, resolution: int = 256, **kwargs: Any) -> None:
                     command += f" -{kwarg}"
             else:
                 command += f" -{kwarg} {value}"
+
+    verbose = False
     if kwargs.get("verbose"):
+        verbose = True
         print("SDF command:", command)
-    subprocess.run(command.split(' '), stdout=subprocess.DEVNULL)
+    subprocess.run(command.split(' '), stdout=None if verbose else subprocess.DEVNULL)
+    os.remove(mesh_path)
     # os.system(command + " &> /dev/null")
 
 
-def mesh_from_sdf(sdf_path: str, **kwargs: Any) -> None:
-    command = f"./isosurface/computeMarchingCubes {sdf_path} {kwargs.get('o')}"
+def mesh_from_sdf(sdf_path: str,
+                  args: Any = None,
+                  **kwargs: Any) -> Union[None, trimesh.Trimesh]:
+    mesh = None
+    if kwargs.get("method") == "vega":
+        command = f"./isosurface/computeMarchingCubes {sdf_path} {kwargs.get('o')}"
 
-    value = kwargs.get('i')
-    if value is not None:
-        command += f" -i {value}"
+        level = kwargs.get('i')  # iso value
+        if level is not None:
+            command += f" -i {level}"
 
-    if kwargs.get('n'):
-        command += " -n"
+        if kwargs.get('n'):
+            command += " -n"
 
-    if kwargs.get("verbose"):
-        print("Marching cubes command:", command)
-    subprocess.run(command.split(' '), stdout=subprocess.DEVNULL)
-    # os.system(command + " &> /dev/null")
+        verbose = False
+        if kwargs.get("verbose"):
+            verbose = True
+            print("Marching cubes command:", command)
+        subprocess.run(command.split(' '), stdout=None if verbose else subprocess.DEVNULL)
+        # os.system(command + " &> /dev/null")
+    elif kwargs.get("method") == "skimage":
+        sdf_dict = load_sdf(sdf_path, args.res)
+        volume = sdf_dict["values"].copy().transpose((2, 1, 0))
+
+        level = kwargs.get('i')
+        level = 0.0 if level is None else level
+        voxel_size = (1 - args.padding) * args.e / args.res
+
+        vertices, faces, normals, _ = marching_cubes(volume=volume,
+                                                     level=level,
+                                                     spacing=(voxel_size, voxel_size, voxel_size),
+                                                     step_size=1,
+                                                     allow_degenerate=False,
+                                                     method="lewiner")  # lorensen or lewiner
+
+        mesh = trimesh.Trimesh(vertices, faces, vertex_normals=normals if kwargs.get("normals") else None)
+        centers = (mesh.bounds[1] + mesh.bounds[0]) / 2
+        mesh.apply_translation(-centers)
+        mesh.export(kwargs.get('o'))
+        if not mesh.is_watertight:
+            print(f"Warning: Mesh {kwargs.get('o')} is not watertight.")
+    else:
+        raise ValueError
+    return mesh
 
 
 def uniform_grid_sampling(grid: np.ndarray,
@@ -107,9 +142,9 @@ def uniform_grid_sampling(grid: np.ndarray,
     assert len(bounds) == 6, f"{bounds}"
 
     res_x, res_y, res_z = grid.shape
-    x = np.linspace(bounds[0], bounds[3], num=res_x).astype(np.float32)
-    y = np.linspace(bounds[1], bounds[4], num=res_y).astype(np.float32)
-    z = np.linspace(bounds[2], bounds[5], num=res_z).astype(np.float32)
+    x = np.linspace(bounds[0], bounds[3], num=res_x)
+    y = np.linspace(bounds[1], bounds[4], num=res_y)
+    z = np.linspace(bounds[2], bounds[5], num=res_z)
 
     if mask is None:
         choice = rng.integers(grid.size, size=num_points)
@@ -138,9 +173,9 @@ def uniform_random_sampling(grid: np.ndarray,
     assert num_points > 0 or points is not None
 
     res_x, res_y, res_z = grid.shape
-    x = np.linspace(bounds[0], bounds[3], num=res_x).astype(np.float32)
-    y = np.linspace(bounds[1], bounds[4], num=res_y).astype(np.float32)
-    z = np.linspace(bounds[2], bounds[5], num=res_z).astype(np.float32)
+    x = np.linspace(bounds[0], bounds[3], num=res_x)
+    y = np.linspace(bounds[1], bounds[4], num=res_y)
+    z = np.linspace(bounds[2], bounds[5], num=res_z)
 
     interpolator = RegularGridInterpolator((z, y, x), grid)
 
@@ -160,10 +195,23 @@ def sample(sdf_path: str, mesh_path: str, args: Any) -> None:
     sdf_dict = load_sdf(sdf_path, args.res)
     sdf_values = sdf_dict["values"]
     sdf_bounds = sdf_dict["bounds"]
+
     mesh = trimesh.load(mesh_path, process=False)
     if args.visualize:
         mesh.show()
     assert mesh.is_watertight, f"Mesh {mesh_path} is not watertight. Skipping."
+
+    if args.voxel:
+        voxel = trimesh.exchange.binvox.voxelize_mesh(mesh,
+                                                      dimension=32,
+                                                      remove_internal=False,
+                                                      center=True,
+                                                      binvox_path="/home/matthias/Downloads/binvox")
+
+        binvox = trimesh.exchange.binvox.export_binvox(voxel)  # Writes in 'xzy' format by default
+        voxel_path = os.path.join('/'.join(sdf_path.split('/')[:-1]), "model.binvox")
+        with open(voxel_path, "wb") as f:
+            f.write(binvox)
 
     # 1. Uniform samples from voxel grid
     uniform_grid_samples = uniform_grid_sampling(sdf_values, sdf_bounds, args.num_points)
@@ -176,8 +224,7 @@ def sample(sdf_path: str, mesh_path: str, args: Any) -> None:
     equal_grid_samples = np.concatenate((inside_samples, outside_samples))
 
     # 3. Surface/uniform samples from voxel grid
-    expansion_ration = args.e if args.e is not None else 1 + 2 * args.padding
-    voxel_size = (1 - args.padding) * expansion_ration / args.res
+    voxel_size = (1 - args.padding) * args.e / args.res
     surface_mask = (sdf_values <= voxel_size) & (sdf_values >= -voxel_size)
     surface_samples = uniform_grid_sampling(sdf_values, sdf_bounds, args.num_points // 2, surface_mask)
     uniform_samples = uniform_grid_samples[:args.num_points // 2]
@@ -226,7 +273,7 @@ def sample(sdf_path: str, mesh_path: str, args: Any) -> None:
     replace = sample_path.split('/')[-1]
 
     for samples, name in zip(all_samples, sample_names):
-        np.save(sample_path.replace(replace, name), samples.astype(np.float32))
+        np.save(sample_path.replace(replace, name), samples.astype(np.float16))
 
         if args.visualize:
             points = samples[:, :3]
@@ -247,7 +294,7 @@ def sample(sdf_path: str, mesh_path: str, args: Any) -> None:
 
             trimesh.PointCloud(points, colors).show()
 
-    np.save(sample_path.replace(replace, "surface"), surface_points[:100000].astype(np.float32))
+    np.save(sample_path.replace(replace, "surface"), surface_points[:100000].astype(np.float16))
     if args.visualize:
         trimesh.PointCloud(surface_points[:100000]).show()
 
@@ -322,7 +369,7 @@ def run(mesh: str, args: Any) -> None:
               'm': args.m,
               'b': args.b,
               'c': args.c,
-              'e': args.e if args.e is not None else 1 + 2 * args.padding,
+              'e': args.e,
               'd': args.d,
               't': args.t,
               'w': args.w,
@@ -340,15 +387,16 @@ def run(mesh: str, args: Any) -> None:
     logger.debug(f"SDF time: {time.time() - start}")
 
     logger.debug(f"Saving mesh from marching cubes to: {mesh_path}")
-    expansion_ration = args.e if args.e is not None else 1 + 2 * args.padding
-    voxel_size = (1 - args.padding) * expansion_ration / args.res
-    kwargs = {'o': os.path.relpath(mesh_path),
-              'i': voxel_size,
+    mesh_path = os.path.relpath(mesh_path) if args.method == "vega" else mesh_path.replace(".obj", ".off")
+    kwargs = {'o': mesh_path,
+              'i': 0.0,
               'n': args.n,
+              "method": args.method,
+              "normals": False,
               "verbose": args.verbose}
 
     start = time.time()
-    mesh_from_sdf(sdf_path, **kwargs)
+    mesh_from_sdf(sdf_path, args=args, **kwargs)
     logger.debug(f"Marching cubes time: {time.time() - start}")
 
     start = time.time()
@@ -366,8 +414,9 @@ def run(mesh: str, args: Any) -> None:
     # Remove unnecessary files
     dir_name = '/'.join(mesh_path.split('/')[:-1])
     test = os.listdir(dir_name)
+    keep = ["npy", "npz", "obj", "off", "binvox"]
     for item in test:
-        if not item.endswith(".npy") and not item.endswith(".obj"):
+        if not item.split('.')[-1] in keep:
             path = os.path.join(dir_name, item)
             logger.warning(f"Removing {path}")
             os.remove(path)
@@ -386,27 +435,29 @@ def main():
     parser.add_argument('-m', type=int, default=2, help="Signed field computation mode.")
     parser.add_argument('-b', help="Specify scene bounding box.")
     parser.add_argument('-c', action="store_true", help="Force bounding box into a cube.")
-    parser.add_argument('-e', type=float, help="Expansion ratio for box.")
+    parser.add_argument('-e', type=float, default=1.1, help="Expansion ratio for box.")
     parser.add_argument('-d', type=int, help="Max octree depth to use.")
     parser.add_argument('-t', type=int, help="Max num triangles per octree cell.")
     parser.add_argument('-w', type=float, help="The band width for narrow band distance field.")
     parser.add_argument('-W', type=int, help="Band width represented as #grid sizes.")
     parser.add_argument('-g', type=float, help="Sigma value.")
-    parser.add_argument('-G', type=int, default=3, help="Sigma value represented as #grid sizes.")
+    parser.add_argument('-G', type=int, default=1, help="Sigma value represented as #grid sizes.")
     parser.add_argument('-r', action="store_true", help="Do not subtract sigma when creating signed field.")
     parser.add_argument('-i', type=str, default=None, help="Precomputed unsigned field for creating signed field.")
     parser.add_argument('-v', action="store_true", help="Also compute voronoi diagram.")
     parser.add_argument('-p', action="store_true", help="also compute closest points.")
     parser.add_argument("--num_points", type=int, default=100000, help="Number of points to sample from the SDF grid.")
     parser.add_argument("--noise", type=float, default=0.01, help="Noise variance added to surface samples.")
-    parser.add_argument("--padding", type=float, default=0.1, help="Padding applied when normalizing mesh.")
+    parser.add_argument("--padding", type=float, default=0.0, help="Padding applied when normalizing mesh.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing files.")
     parser.add_argument("--sdf", action="store_true", help="Store the computed SDF.")
     parser.add_argument("--mesh", action="store_true", help="Compute and store object mesh created from SDF.")
+    parser.add_argument("--voxel", action="store_true", help="Compute and store voxelized mesh.")
     parser.add_argument("--shapenet", action="store_true", help="Assumes ShapeNet file structure for in- and output.")
     parser.add_argument("--version", type=int, default=1, help="ShapeNet version.")
     parser.add_argument("--verbose", action="store_true", help="Print verbose output during execution.")
     parser.add_argument("--visualize", action="store_true", help="Visualize SDF samples.")
+    parser.add_argument("--method", type=str, default="vega", help="Marching cubes method (one of 'skimage' or 'vega').")
 
     args = parser.parse_args()
 
@@ -425,6 +476,7 @@ def main():
         meshes = glob.glob(args.meshes.pop())
     if args.verbose:
         print("Path(s) to mesh(es):", meshes)
+    print("Processing", len(meshes), "mesh(es).")
 
     if len(meshes) > 1:
         with Parallel(n_jobs=cpu_count()) as parallel:
