@@ -18,3 +18,5 @@ pnt_vis/
 *.PNG
 *.png
 *.mtl
+*.off
+*.binvox
