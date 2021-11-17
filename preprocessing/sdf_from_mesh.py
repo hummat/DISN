@@ -48,6 +48,8 @@ def normalize_mesh(input_path: str, output_path: str, args: Any) -> None:
     scale = total_size / (1 - args.padding)
     centers = (mesh.bounds[1] + mesh.bounds[0]) / 2
 
+    np.savez(output_path.replace(output_path.split('/')[-1], "transform"), loc=centers, scale=scale)
+
     mesh.apply_translation(-centers)
     mesh.apply_scale(1 / scale)
 
@@ -85,15 +87,15 @@ def sdf_from_mesh(mesh_path: str, resolution: int = 256, **kwargs: Any) -> None:
         print("SDF command:", command)
     subprocess.run(command.split(' '), stdout=None if verbose else subprocess.DEVNULL)
     os.remove(mesh_path)
-    # os.system(command + " &> /dev/null")
 
 
 def mesh_from_sdf(sdf_path: str,
                   args: Any = None,
-                  **kwargs: Any) -> Union[None, trimesh.Trimesh]:
-    mesh = None
+                  **kwargs: Any) -> bool:
+    output_path = kwargs.get('o')
     if kwargs.get("method") == "vega":
-        command = f"./isosurface/computeMarchingCubes {sdf_path} {kwargs.get('o')}"
+        output_path = output_path.replace(".off", ".obj")
+        command = f"./isosurface/computeMarchingCubes {sdf_path} {os.path.relpath(output_path)}"
 
         level = kwargs.get('i')  # iso value
         if level is not None:
@@ -106,32 +108,36 @@ def mesh_from_sdf(sdf_path: str,
         if kwargs.get("verbose"):
             verbose = True
             print("Marching cubes command:", command)
+
         subprocess.run(command.split(' '), stdout=None if verbose else subprocess.DEVNULL)
-        # os.system(command + " &> /dev/null")
+
+        command = f"meshlabserver -i {output_path} -o {output_path.replace('.obj', '.off')}"
+        subprocess.run(command.split(' '), stdout=None if verbose else subprocess.DEVNULL)
+        os.remove(output_path)
+        return True
     elif kwargs.get("method") == "skimage":
         sdf_dict = load_sdf(sdf_path, args.res)
         volume = sdf_dict["values"].copy().transpose((2, 1, 0))
 
         level = kwargs.get('i')
         level = 0.0 if level is None else level
-        voxel_size = (1 - args.padding) * args.e / args.res
+        box_size = (1 - args.padding) * args.e
+        voxel_size = box_size / (np.array(volume.shape) - 1)
 
         vertices, faces, normals, _ = marching_cubes(volume=volume,
                                                      level=level,
-                                                     spacing=(voxel_size, voxel_size, voxel_size),
+                                                     spacing=voxel_size,
                                                      step_size=1,
                                                      allow_degenerate=False,
                                                      method="lewiner")  # lorensen or lewiner
 
         mesh = trimesh.Trimesh(vertices, faces, vertex_normals=normals if kwargs.get("normals") else None)
-        centers = (mesh.bounds[1] + mesh.bounds[0]) / 2
-        mesh.apply_translation(-centers)
-        mesh.export(kwargs.get('o'))
-        if not mesh.is_watertight:
-            print(f"Warning: Mesh {kwargs.get('o')} is not watertight.")
+        offsets = np.repeat(0.5 * box_size, 3)
+        mesh.apply_translation(-offsets)
+        mesh.export(output_path)
+        return mesh.is_watertight
     else:
         raise ValueError
-    return mesh
 
 
 def uniform_grid_sampling(grid: np.ndarray,
@@ -241,13 +247,22 @@ def sample(sdf_path: str, mesh_path: str, args: Any) -> None:
     equal_random_samples = np.concatenate((inside_samples, outside_samples))
 
     # 6. Surface/uniform random samples in volume
-    surface_points = mesh.sample(max(100000, args.num_points))
-    # trimesh.PointCloud(np.concatenate((surface_points, surface_samples[:, :3])),
-    #                    np.concatenate((np.tile((1.0, 0.0, 0.0, 1.0), (100000, 1)),
-    #                                    np.tile((0.0, 0.0, 1.0, 1.0), (50000, 1))))).show()
+    surface_points, index = mesh.sample(max(100000, args.num_points), return_index=True)
+    surface_normals = mesh.face_normals[index]
     noisy_points = surface_points[:args.num_points // 2] + args.noise * rng.standard_normal((args.num_points // 2, 3))
     surface_samples = uniform_random_sampling(sdf_values, sdf_bounds, points=noisy_points)
     surface_random_samples = np.concatenate((surface_samples, uniform_random_samples[:args.num_points // 2]))
+
+    # samples = uniform_grid_samples[uniform_grid_samples[:, 3] <= 0][:, :3]
+    # samples = equal_grid_samples[equal_grid_samples[:, 3] <= 0][:, :3]
+    # samples = surface_grid_samples[surface_grid_samples[:, 3] <= 0][:, :3]
+    # samples = uniform_random_samples[uniform_random_samples[:, 3] <= 0][:, :3]
+    # samples = equal_random_samples[equal_random_samples[:, 3] <= 0][:, :3]
+    # samples = surface_random_samples[surface_random_samples[:, 3] <= 0][:, :3]
+    # print(len(samples))
+    # trimesh.PointCloud(np.concatenate((surface_points, samples)),
+    #                    np.concatenate((np.tile((1.0, 0.0, 0.0, 1.0), (100000, 1)),
+    #                                    np.tile((0.0, 0.0, 1.0, 1.0), (len(samples), 1))))).show()
 
     all_samples = [uniform_grid_samples,
                    equal_grid_samples,
@@ -281,7 +296,7 @@ def sample(sdf_path: str, mesh_path: str, args: Any) -> None:
 
             reds = get_cmap("Reds")
             blues = get_cmap("Blues").reversed()
-            inside = sdfs[sdfs < 0]
+            inside = sdfs[sdfs <= 0]
             outside = sdfs[sdfs > 0]
             inside_norm = (inside - inside.min()) / (inside.max() - inside.min())
             outside_norm = (outside - outside.min()) / (outside.max() - outside.min())
@@ -289,12 +304,13 @@ def sample(sdf_path: str, mesh_path: str, args: Any) -> None:
             outside = [blues(o) for o in outside_norm]
 
             colors = np.array([(0.0, 0.0, 0.0, 1.0) for _ in sdfs])
-            colors[sdfs < 0] = inside
+            colors[sdfs <= 0] = inside
             colors[sdfs > 0] = outside
 
             trimesh.PointCloud(points, colors).show()
 
     np.save(sample_path.replace(replace, "surface"), surface_points[:100000].astype(np.float16))
+    np.save(sample_path.replace(replace, "normals"), surface_normals[:100000].astype(np.float16))
     if args.visualize:
         trimesh.PointCloud(surface_points[:100000]).show()
 
@@ -356,55 +372,70 @@ def run(mesh: str, args: Any) -> None:
     sdf_path = get_sdf_path(mesh_path, args)
     sample_dir = '/'.join(get_sample_path(sdf_path, args).split('/')[:-1])
     sample_files = glob.glob(sample_dir + "/*.npy")
-    if len(sample_files) == 7 and not args.overwrite:
+    if len(sample_files) >= 7 and not args.overwrite:
         logger.warning(f"Sampling for mesh {mesh} done. Skipping.")
         return
 
-    normalize_mesh(mesh, mesh_path, args)
-
-    logger.debug(f"Saving SDF to: {sdf_path}")
-    kwargs = {'n': args.n,
-              's': False if args.u else True,
-              'o': os.path.relpath(sdf_path),
-              'm': args.m,
-              'b': args.b,
-              'c': args.c,
-              'e': args.e,
-              'd': args.d,
-              't': args.t,
-              'w': args.w,
-              'W': args.W,
-              'g': args.g,
-              'G': args.G,
-              'r': args.r,
-              'i': args.i,
-              'v': args.v,
-              'p': args.p,
-              "verbose": args.verbose}
-
-    start = time.time()
-    sdf_from_mesh(mesh_path, resolution=args.res, **kwargs)
-    logger.debug(f"SDF time: {time.time() - start}")
-
-    logger.debug(f"Saving mesh from marching cubes to: {mesh_path}")
-    mesh_path = os.path.relpath(mesh_path) if args.method == "vega" else mesh_path.replace(".obj", ".off")
-    kwargs = {'o': mesh_path,
-              'i': 0.0,
-              'n': args.n,
-              "method": args.method,
-              "normals": False,
-              "verbose": args.verbose}
-
-    start = time.time()
-    mesh_from_sdf(sdf_path, args=args, **kwargs)
-    logger.debug(f"Marching cubes time: {time.time() - start}")
-
-    start = time.time()
     try:
-        sample(sdf_path, mesh_path, args)
-    except AssertionError as e:
+        normalize_mesh(mesh, mesh_path, args)
+    except Exception as e:
         logger.critical(e)
-    logger.debug(f"Sample time: {time.time() - start}")
+        return
+
+    try:
+        logger.debug(f"Saving SDF to: {sdf_path}")
+        kwargs = {'n': args.n,
+                  's': False if args.u else True,
+                  'o': os.path.relpath(sdf_path),
+                  'm': args.m,
+                  'b': args.b,
+                  'c': args.c,
+                  'e': args.e,
+                  'd': args.d,
+                  't': args.t,
+                  'w': args.w,
+                  'W': args.W,
+                  'g': args.g,
+                  'G': args.G,
+                  'r': args.r,
+                  'i': args.i,
+                  'v': args.v,
+                  'p': args.p,
+                  "verbose": args.verbose}
+
+        start = time.time()
+        sdf_from_mesh(mesh_path, resolution=args.res, **kwargs)
+        logger.debug(f"SDF time: {time.time() - start}")
+    except Exception as e:
+        logger.critical(e)
+        return
+
+    try:
+        mesh_path = mesh_path.replace(".obj", ".off")
+        logger.debug(f"Saving mesh from marching cubes to: {mesh_path}")
+        kwargs = {'o': mesh_path,
+                  'i': 0.0,
+                  'n': args.n,
+                  "method": args.method,
+                  "normals": False,
+                  "verbose": args.verbose}
+
+        start = time.time()
+        if not mesh_from_sdf(sdf_path, args=args, **kwargs):
+            kwargs["method"] = "vega"
+            mesh_from_sdf(sdf_path, args=args, **kwargs)
+        logger.debug(f"Marching cubes time: {time.time() - start}")
+    except Exception as e:
+        logger.critical(e)
+        return
+
+    try:
+        start = time.time()
+        sample(sdf_path, mesh_path, args)
+        logger.debug(f"Sample time: {time.time() - start}")
+    except Exception as e:
+        logger.critical(e)
+        return
 
     if not args.sdf:
         os.remove(sdf_path)
@@ -457,7 +488,7 @@ def main():
     parser.add_argument("--version", type=int, default=1, help="ShapeNet version.")
     parser.add_argument("--verbose", action="store_true", help="Print verbose output during execution.")
     parser.add_argument("--visualize", action="store_true", help="Visualize SDF samples.")
-    parser.add_argument("--method", type=str, default="vega", help="Marching cubes method (one of 'skimage' or 'vega').")
+    parser.add_argument("--method", type=str, default="skimage", help="Marching cubes method (one of 'skimage' or 'vega').")
 
     args = parser.parse_args()
 
