@@ -445,7 +445,7 @@ def run(mesh: str, args: Any) -> None:
     # Remove unnecessary files
     dir_name = '/'.join(mesh_path.split('/')[:-1])
     test = os.listdir(dir_name)
-    keep = ["npy", "npz", "obj", "off", "binvox"]
+    keep = ["npy", "npz", "obj", "off", "binvox", "dist"]
     for item in test:
         if not item.split('.')[-1] in keep:
             path = os.path.join(dir_name, item)
