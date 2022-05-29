@@ -55,8 +55,8 @@ def normalize_mesh(input_path: str, output_path: str, args: Any) -> None:
 
     # pymesh.save_mesh_raw(output_path, mesh.vertices, mesh.faces)
     mesh.export(output_path, file_type="obj")
-    if not input_path.endswith(".off"):
-        os.remove(path)
+    # if not input_path.endswith(".off"):
+    #     os.remove(path)
 
 
 def sdf_from_mesh(mesh_path: str, resolution: int = 256, **kwargs: Any) -> None:
